@@ -57,6 +57,7 @@ from torch import _guards
 
 # see discussion at https://github.com/pytorch/pytorch/issues/120699
 from torch._C._dynamo.eval_frame import (  # noqa: F401
+    _has_precompile_entries,
     get_eval_frame_isolate_recompiles_id,
     reset_code as _reset_code,
     set_code_exec_strategy,
@@ -1019,16 +1020,56 @@ class _TorchDynamoContext:
                         self._package.initialize(
                             fn_key, result.dynamo, ignore_inlined_sources=False
                         )
-                        self._package.install(result.backends)
+                        # Install into the SAME region this context looks up in.
+                        # Precompile entries match their own region only, so a
+                        # default-bucket install here would never be found by an
+                        # isolate_recompiles=True context -- the cache would load
+                        # and then silently serve nothing.
+                        self._package.install(
+                            result.backends,
+                            isolate_recompiles_id=self._isolate_recompiles_id,
+                        )
                     except RuntimeError:
                         log.warning(
                             "Failed to load entry from dynamo cache", exc_info=True
                         )
+                        # install() binds an entry's globals and precompile
+                        # entries before it discovers a missing backend on a
+                        # later entry, so a partial install stays live in this
+                        # context's region (the finalizer never fires while this
+                        # context retains the package). Undo it before re-init.
+                        self._package.uninstall()
+                        # initialize() above already set _initialized before
+                        # install() raised, so clear it or the fresh re-init
+                        # below trips its already-initialized assertion.
+                        self._package._initialized = False
                         self._package.initialize(
                             fn_key, None, ignore_inlined_sources=False
                         )
 
         fn = innermost_fn(fn)
+
+        # Lookup is region-exact but not owner-exact: while another package's
+        # entries serve this frame in this context's region, Dynamo never
+        # reaches this context's callback, so a capturing package records
+        # nothing and a later save writes a zero-guarded artifact whose install
+        # skip_code()s the frame. Refuse up front on the explicit
+        # CompilePackage(fn) path; the transparent cache installs and captures
+        # through this same context, so what it finds is its own.
+        if (
+            self._package is not None
+            and not config.caching_precompile
+            and hasattr(fn, "__code__")
+            and not self._package.owns_install_on(
+                fn.__code__, self._isolate_recompiles_id
+            )
+            and _has_precompile_entries(fn.__code__, self._isolate_recompiles_id)
+        ):
+            raise RuntimeError(
+                f"another CompilePackage is installed on {fn.__code__.co_name} in "
+                "this compile region; uninstall it first or compile with "
+                "isolate_recompiles=True"
+            )
 
         def aot_compile(example_inputs: tuple[tuple[Any, ...], dict[str, Any]]) -> Any:
             from torch._dynamo.aot_compile import aot_compile_fullgraph
