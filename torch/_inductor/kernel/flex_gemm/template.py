@@ -54,6 +54,8 @@ class FlexGemmEpilogueLocalReduceConfig:
     store_finalize: str | None = None
     prepass_combine: str | None = None
     prepass_finalize: str | None = None
+    reduce_planes: int = 1
+    fragment_reduced: bool = False
 
     @classmethod
     def from_output_plan(
@@ -75,6 +77,8 @@ class FlexGemmEpilogueLocalReduceConfig:
             source.local_reduce_store_finalize,
             source.local_reduce_prepass_combine,
             source.local_reduce_prepass_finalize,
+            source.local_reduce_planes,
+            source.local_reduce_fragment_reduced,
         )
 
 
@@ -195,8 +199,8 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
 
     @staticmethod
     def _callback_reference(name: str) -> str:
-        """Render a built-in finalizer name or generated callable reference."""
-        return repr(name) if name == "mean" else name
+        """Render a built-in callback name or generated callable reference."""
+        return repr(name) if name in {"add", "mul", "max", "min", "mean"} else name
 
     def _local_reduce_kwargs(
         self,
@@ -212,7 +216,13 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
             plan += f", output_layout={local_reduce.output_layout.codegen_reference()}"
         if local_reduce.feeds_main:
             plan += ", feeds_main=True"
-        plan += f", combine={local_reduce.combine!r}"
+        if local_reduce.combine is None:
+            raise RuntimeError("FlexGEMM EpiMod local reductions require a combine")
+        plan += f", combine={self._callback_reference(local_reduce.combine)}"
+        if local_reduce.reduce_planes != 1:
+            plan += f", reduce_planes={local_reduce.reduce_planes}"
+        if local_reduce.fragment_reduced:
+            plan += ", fragment_reduced=True"
         if local_reduce.finalize is not None:
             plan += f", finalize={self._callback_reference(local_reduce.finalize)}"
         if local_reduce.store_finalize is not None:
