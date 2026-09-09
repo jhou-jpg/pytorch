@@ -1816,6 +1816,7 @@ class FlexGemmEpiModEmitter:
         epilogue_arg_kinds: tuple[str, ...],
         *,
         fast_math: bool,
+        mainloop_scale_count: int,
     ) -> None:
         self.graph_module = graph_module
         self.gemm = analysis.gemm
@@ -1881,6 +1882,9 @@ class FlexGemmEpiModEmitter:
         self.operand_names = tuple(
             f"operand{index}" for index in range(len(epilogue_arg_placeholders))
         )
+        if not 0 <= mainloop_scale_count <= len(self.operand_names):
+            raise RuntimeError("invalid FlexGEMM main-loop scale operand count")
+        self.mainloop_scale_count = mainloop_scale_count
         self.kernel = GemmEpilogueCuteDSLKernel()
         self.params = ["acc"]
         self.base_env = self.initial_env_for_params(self.params)
@@ -1907,6 +1911,8 @@ class FlexGemmEpiModEmitter:
         if self.alpha != 1:
             params.append("alpha")
             gemm_value = "(acc * alpha)"
+        for name in self.operand_names[: self.mainloop_scale_count]:
+            gemm_value = f"({gemm_value} * {name})"
         if (
             self.gemm.target
             in (
@@ -2336,6 +2342,7 @@ def materialize_flex_gemm_epimod(
     epilogue_arg_kinds: tuple[str, ...],
     *,
     fast_math: bool = False,
+    mainloop_scale_count: int = 0,
 ) -> FlexGemmEpiModSource:
     """Materialize an analyzed FlexGEMM body as QuACK EpiMod source."""
     return FlexGemmEpiModEmitter(
@@ -2346,4 +2353,5 @@ def materialize_flex_gemm_epimod(
         beta,
         epilogue_arg_kinds,
         fast_math=fast_math,
+        mainloop_scale_count=mainloop_scale_count,
     ).materialize()

@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 
 
 @dataclasses.dataclass(frozen=True)
+class FlexGemmEpilogueBlockScaledConfig:
+    """Shared QuACK A/B block-scaled format and template positions of SFA/SFB."""
+
+    format: str
+    sfa_index: int
+    sfb_index: int
+
+
+@dataclasses.dataclass(frozen=True)
 class FlexGemmEpilogueLocalReduceConfig:
     """Template-time local-reduce metadata for output and/or feed-main consumers."""
 
@@ -71,6 +80,7 @@ class FlexGemmEpilogueConfig:
         gemm_op: Original aten GEMM op spec used to map inputs into QuACK.
         alpha: Static alpha multiplier for addmm/baddbmm inputs.
         beta: Static beta multiplier for addmm/baddbmm bias inputs.
+        blockscaled: Shared block-scaled format and SFA/SFB input positions.
         quack_config: Exact QuACK GemmConfig fields pinned for this choice, or
             None to take QuACK's untuned default within the constraints.
         epilogue_arg_indices: Template input indices for read-only epilogue captures.
@@ -84,6 +94,7 @@ class FlexGemmEpilogueConfig:
     gemm_op: FlexGemmOpSpec
     alpha: float
     beta: float
+    blockscaled: FlexGemmEpilogueBlockScaledConfig | None
     quack_config: tuple[tuple[str, Any], ...] | None
     epilogue_arg_indices: tuple[int, ...]
     epilogue_arg_kinds: tuple[str, ...]
@@ -219,6 +230,12 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
         kwargs = []
         if config.quack_config is not None:
             kwargs.append(f", config={config.quack_config!r}")
+        if config.blockscaled is not None:
+            kwargs.append(
+                f", SFA={input_args[config.blockscaled.sfa_index]}, "
+                f"SFB={input_args[config.blockscaled.sfb_index]}, "
+                f"blockscaled_format={config.blockscaled.format!r}"
+            )
         if epilogue_args:
             kwargs.append(
                 f", epilogue_args=({', '.join(epilogue_args)},), "
