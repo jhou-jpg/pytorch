@@ -70,6 +70,7 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_CROSSREF,
     TEST_WITH_ROCM,
     TEST_WITH_SLOW,
+    TEST_XPU,
     TestCase,
     xfailIfNoAcceleratorTriton,
 )
@@ -89,18 +90,19 @@ def get_profiler_activities(device_type):
 
 
 def setUpModule():
-    if (
-        kineto_available()
-        and torch.cuda.is_available()
-        and ProfilerActivity.CUDA in supported_activities()
-    ):
-        # Kineto's process-global profiler cannot currently upgrade from a
-        # CPU-only first initialization to CUDA-capable profiling. Prime it with
-        # CUDA so CPU-only tests do not poison later CUDA profiler tests.
-        x = torch.ones(1, device="cuda")
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]):
-            x + x
-            torch.cuda.synchronize()
+    if not kineto_available() or not torch.accelerator.is_available():
+        return
+    device_type = torch.accelerator.current_accelerator().type
+    activities = get_profiler_activities(device_type)
+    if len(activities) < 2:
+        return
+    # Kineto's process-global profiler cannot currently upgrade from a CPU-only
+    # first initialization to accelerator-capable profiling. Prime it with the
+    # accelerator so CPU-only tests do not poison later device profiler tests.
+    x = torch.ones(1, device=device_type)
+    with profile(activities=activities):
+        x + x
+        torch.accelerator.synchronize()
 
 
 # if tqdm is not shutdown properly, it will leave the monitor thread alive.
@@ -2799,6 +2801,13 @@ if KinetoStepTracker.current_step() != initial_step + 2 * niters:
     @skipIfTorchDynamo("profiler gets ignored if dynamo activated")
     @onlyOn("cpu")
     @unittest.skipIf(IS_WINDOWS, "can't use os.fork() on Windows")
+    # onlyOn("cpu") means a device_type="xpu" skip would never fire, so this has
+    # to gate on the build: the child deadlocks whenever the parent process has
+    # already initialized Kineto's XPU profiler.
+    @unittest.skipIf(
+        TEST_XPU,
+        "os.fork() deadlocks after Kineto XPU init! Refer https://github.com/intel/torch-xpu-ops/issues/5287",
+    )
     def test_forked_process(self, device):
         device_type = device.split(":")[0]
 
